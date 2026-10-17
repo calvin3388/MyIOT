@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MQTT Panel</title>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.3.4/dist/mqtt.min.js"></script>
+<style>
+:root{--bg:#e9ece6;--card:#f6f7f3;--ink:#1d2421;--mute:#667068;--line:#c9cfc4;--accent:#1f6f5c;--on:#e0a21b;--bad:#b3402f;--good:#2f8a4f}
+@media (prefers-color-scheme:dark){:root{--bg:#161a18;--card:#1f2523;--ink:#e6eae5;--mute:#8e988f;--line:#333c38;--accent:#4fb59a;--on:#e8b13a;--bad:#e0705e;--good:#5fc283}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 "Trebuchet MS",Verdana,sans-serif;padding:16px;max-width:960px;margin-inline:auto}
+h1{font-size:1.4rem;margin:0 0 4px;letter-spacing:.01em}
+h2{font-size:1rem;margin:0 0 10px}
+.sub{color:var(--mute);margin:0 0 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+label{display:block;font-size:.85rem;color:var(--mute)}
+input,select{width:100%;margin-top:3px;padding:9px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit}
+button{font:inherit;cursor:pointer;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:#fff;padding:9px 14px}
+button.ghost{background:transparent;color:var(--accent)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--on);outline-offset:2px}
+.bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:.9rem}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--mute)}
+.pill.ok .dot{background:var(--good)}.pill.err .dot{background:var(--bad)}.pill.wait .dot{background:var(--on)}
+#panel{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;align-items:center;gap:8px}
+.tile .name{font-weight:bold;text-align:center}
+.tile .meta{font-size:.78rem;color:var(--mute);word-break:break-all;text-align:center}
+.push{width:96px;height:96px;border-radius:50%;border:6px solid var(--line);background:var(--bg);color:var(--ink);padding:0;font-weight:bold;touch-action:none;user-select:none;transition:transform .08s}
+.push:disabled{opacity:.45;cursor:not-allowed}
+.push.active{background:var(--on);border-color:var(--ink);color:#1d2421;transform:scale(.94)}
+.status{width:100%;border-top:1px solid var(--line);padding-top:8px;font-size:.85rem;text-align:center}
+.status b{display:block;font-size:1rem;margin-bottom:2px}
+.rm{background:none;border:none;color:var(--mute);padding:0;font-size:.8rem;text-decoration:underline}
+#log{height:170px;overflow:auto;font:12px/1.5 Consolas,monospace;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;margin:0;white-space:pre-wrap}
+.hint{font-size:.8rem;color:var(--mute);margin:8px 0 0}
+</style>
+</head>
+<body>
+<h1>MQTT panel</h1>
+<p class="sub">Connect to your broker over WebSockets, then press buttons to send momentary commands.</p>
+
+<form class="card" id="conn" autocomplete="off">
+  <h2>Broker connection</h2>
+  <div class="grid">
+    <label style="grid-column:1/-1">Broker WebSocket URL<input id="url" placeholder="wss://broker.example.com:8884/mqtt" required></label>
+    <label>Username<input id="user"></label>
+    <label>Password<input id="pass" type="password"></label>
+    <label>Client ID<input id="cid"></label>
+  </div>
+  <div class="bar">
+    <button type="submit" id="go">Connect</button>
+    <button type="button" class="ghost" id="stop" hidden>Disconnect</button>
+    <span class="pill" id="state"><span class="dot"></span><span id="stateText">Disconnected</span></span>
+  </div>
+  <p class="hint">Browsers can only use MQTT over WebSockets (ws:// or wss://), not plain tcp:// on port 1883. Check your broker’s WebSocket port and path. If this page is opened from https, use wss://. The password is never saved.</p>
+</form>
+
+<div id="panel"></div>
+
+<form class="card" id="add" autocomplete="off">
+  <h2>Add a button</h2>
+  <div class="grid">
+    <label>Label<input id="a-label" placeholder="Garage door" required></label>
+    <label>Command topic<input id="a-cmd" placeholder="home/garage/set" required></label>
+    <label>Status topic<input id="a-st" placeholder="home/garage/status"></label>
+    <label>ON payload<input id="a-on" value="ON"></label>
+    <label>OFF payload<input id="a-off" value="OFF"></label>
+    <label>Mode<select id="a-mode"><option value="pulse">Pulse (ON, then OFF after delay)</option><option value="hold">Hold (ON while pressed)</option></select></label>
+    <label>Pulse delay (ms)<input id="a-ms" type="number" min="50" max="30000" value="500"></label>
+  </div>
+  <div class="bar"><button type="submit">Add button</button></div>
+</form>
+
+<div class="card">
+  <h2>Message log</h2>
+  <pre id="log" aria-live="polite"></pre>
+</div>
+
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)};
+  var KEY_CONN="mqttpanel.conn", KEY_BTN="mqttpanel.buttons";
+  var client=null, connected=false, buttons=[], timers={};
+
+  function load(k,d){try{var v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}}
+  function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+
+  buttons=load(KEY_BTN,null)||[
+    {id:"b1",label:"Relay 1",cmd:"panel/relay1/set",st:"panel/relay1/status",on:"ON",off:"OFF",mode:"pulse",ms:500},
+    {id:"b2",label:"Door",cmd:"panel/door/set",st:"panel/door/status",on:"ON",off:"OFF",mode:"hold",ms:500}
+  ];
+  var c=load(KEY_CONN,{});
+  $("url").value=c.url||""; $("user").value=c.user||"";
+  $("cid").value=c.cid||("panel-"+Math.random().toString(16).slice(2,8));
+
+  function log(t){
+    var el=$("log");
+    el.textContent+=new Date().toLocaleTimeString()+"  "+t+"\n";
+    var lines=el.textContent.split("\n"); if(lines.length>300) el.textContent=lines.slice(-250).join("\n");
+    el.scrollTop=el.scrollHeight;
+  }
+  function setState(cls,txt){$("state").className="pill "+cls;$("stateText").textContent=txt}
+
+  function render(){
+    var p=$("panel"); p.innerHTML="";
+    if(!buttons.length){p.innerHTML='<p class="sub">No buttons yet. Add one below.</p>';return}
+    buttons.forEach(function(b){
+      var t=document.createElement("div"); t.className="tile";
+      var name=document.createElement("div"); name.className="name"; name.textContent=b.label;
+      var btn=document.createElement("button"); btn.type="button"; btn.className="push"; btn.id="btn-"+b.id;
+      btn.textContent=b.mode==="hold"?"HOLD":"PUSH"; btn.disabled=!connected;
+      btn.setAttribute("aria-label",b.label+(b.mode==="hold"?" (hold to send)":" (press to send)"));
+      wire(btn,b);
+      var meta=document.createElement("div"); meta.className="meta";
+      meta.textContent=b.cmd+" ← "+b.on+" / "+b.off+(b.mode==="pulse"?" ("+b.ms+" ms)":" (while held)");
+      var st=document.createElement("div"); st.className="status";
+      st.innerHTML='<b id="sv-'+b.id+'">'+(b.st?"No report yet":"No status topic")+'</b><span id="sm-'+b.id+'">'+(b.st?b.st:"")+'</span>';
+      var rm=document.createElement("button"); rm.type="button"; rm.className="rm"; rm.textContent="Remove";
+      rm.onclick=function(){
+        if(connected&&b.st&&!buttons.some(function(o){return o.id!==b.id&&o.st===b.st})) client.unsubscribe(b.st);
+        buttons=buttons.filter(function(o){return o.id!==b.id}); save(KEY_BTN,buttons); render();
+      };
+      t.append(name,btn,meta,st,rm); p.appendChild(t);
+    });
+  }
+
+  function send(b,payload){
+    if(!connected) return;
+    client.publish(b.cmd,payload,{qos:0},function(err){
+      log(err?("publish failed on "+b.cmd+": "+err.message):("sent "+payload+" to "+b.cmd));
+    });
+  }
+
+  function wire(btn,b){
+    var down=false;
+    function on(){btn.classList.add("active");send(b,b.on)}
+    function off(){btn.classList.remove("active");send(b,b.off)}
+    if(b.mode==="hold"){
+      btn.addEventListener("pointerdown",function(e){if(down||!connected)return;down=true;btn.setPointerCapture(e.pointerId);on()});
+      var up=function(){if(!down)return;down=false;off()};
+      btn.addEventListener("pointerup",up); btn.addEventListener("pointercancel",up); btn.addEventListener("lostpointercapture",up);
+      btn.addEventListener("keydown",function(e){if((e.key===" "||e.key==="Enter")&&!e.repeat&&!down&&connected){down=true;e.preventDefault();on()}});
+      btn.addEventListener("keyup",function(e){if((e.key===" "||e.key==="Enter")&&down){down=false;off()}});
+    }else{
+      btn.addEventListener("click",function(){
+        if(!connected||timers[b.id])return;
+        on();
+        timers[b.id]=setTimeout(function(){delete timers[b.id];off()},b.ms);
+      });
+    }
+  }
+
+  function subscribeAll(){
+    var seen={};
+    buttons.forEach(function(b){
+      if(b.st&&!seen[b.st]){seen[b.st]=1;client.subscribe(b.st,function(err){log(err?("subscribe failed "+b.st):("listening on "+b.st))})}
+    });
+  }
+
+  function connect(){
+    var url=$("url").value.trim();
+    if(!/^wss?:\/\//i.test(url)){log("URL must start with ws:// or wss://");setState("err","Invalid URL");return}
+    save(KEY_CONN,{url:url,user:$("user").value,cid:$("cid").value});
+    disconnect(true);
+    setState("wait","Connecting…"); log("connecting to "+url);
+    var o={clientId:$("cid").value||undefined,reconnectPeriod:3000,connectTimeout:8000,clean:true};
+    if($("user").value) o.username=$("user").value;
+    if($("pass").value) o.password=$("pass").value;
+    try{client=mqtt.connect(url,o)}catch(e){setState("err","Failed");log("error: "+e.message);return}
+    $("go").hidden=true; $("stop").hidden=false;
+    client.on("connect",function(){connected=true;setState("ok","Connected");log("connected");subscribeAll();render()});
+    client.on("reconnect",function(){setState("wait","Reconnecting…")});
+    client.on("close",function(){if(connected)log("connection closed");connected=false;if($("stop").hidden===false)setState("err","Offline");render()});
+    client.on("error",function(e){setState("err","Error");log("error: "+(e&&e.message||e))});
+    client.on("message",function(topic,msg){
+      var text=msg.toString(), when=new Date().toLocaleTimeString();
+      log("report "+topic+" = "+text);
+      buttons.forEach(function(b){
+        if(b.st===topic){
+          var v=$("sv-"+b.id), m=$("sm-"+b.id);
+          if(v) v.textContent=text; if(m) m.textContent=topic+" · "+when;
+        }
+      });
+    });
+  }
+
+  function disconnect(quiet){
+    Object.keys(timers).forEach(function(k){clearTimeout(timers[k])}); timers={};
+    if(client){var cl=client;client=null;connected=false;cl.end(true)}
+    $("go").hidden=false; $("stop").hidden=true;
+    if(!quiet){setState("","Disconnected");log("disconnected")}
+    render();
+  }
+
+  $("conn").addEventListener("submit",function(e){e.preventDefault();connect()});
+  $("stop").addEventListener("click",function(){disconnect(false)});
+  $("add").addEventListener("submit",function(e){
+    e.preventDefault();
+    var b={id:"b"+Date.now(),label:$("a-label").value.trim(),cmd:$("a-cmd").value.trim(),st:$("a-st").value.trim(),
+      on:$("a-on").value,off:$("a-off").value,mode:$("a-mode").value,ms:Math.max(50,parseInt($("a-ms").value,10)||500)};
+    buttons.push(b); save(KEY_BTN,buttons); render();
+    if(connected&&b.st) client.subscribe(b.st);
+    $("add").reset(); $("a-on").value="ON"; $("a-off").value="OFF"; $("a-ms").value=500;
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
