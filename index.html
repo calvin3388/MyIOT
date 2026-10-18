@@ -172,8 +172,9 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
     try{client=mqtt.connect(url,o)}catch(e){setState("err","Failed");log("error: "+e.message);return}
     $("go").hidden=true; $("stop").hidden=false;
     client.on("connect",function(){connected=true;setState("ok","Connected");log("connected");subscribeAll();render()});
-    client.on("reconnect",function(){setState("wait","Reconnecting…")});
-    client.on("close",function(){if(connected)log("connection closed");connected=false;if($("stop").hidden===false)setState("err","Offline");render()});
+    var tries=0;
+    client.on("reconnect",function(){tries++;setState("wait","Retrying…");log("retry #"+tries+" (no MQTT reply from broker yet)")});
+    client.on("close",function(){log(connected?"connection closed":"could not connect: no valid MQTT-over-WebSocket reply (wrong port/path, plain-MQTT port, blocked, or unreachable)");connected=false;if($("stop").hidden===false)setState("err","Offline");render()});
     client.on("error",function(e){setState("err","Error");log("error: "+(e&&e.message||e))});
     client.on("message",function(topic,msg){
       var text=msg.toString(), when=new Date().toLocaleTimeString();
